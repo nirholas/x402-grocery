@@ -1,51 +1,111 @@
-# x402-grocery for AI agents
+# For AI agents — x402-grocery
 
-This service is built to be consumed by autonomous agents: machine-discoverable, per-request paid, artifact-in-response.
+How an autonomous agent finds this service, pays for a call, and uses what comes back.
 
-## Discovery
+## 1. Discovery
 
-Two artifacts tell an agent everything it needs:
+Two machine-readable entry points, both free:
 
-1. **[skill.md](https://github.com/nirholas/x402-grocery/blob/main/skill.md)** (repo root) — human/agent-readable capability file: endpoints, prices, request/response schemas, payment protocol. Fetch it, hand it to your model as context, and the model knows how to shop here.
-2. **`GET /.well-known/x402`** — machine-readable JSON manifest (`x402Version`, `resources[]` with `resource`, `price`, `network`, `asset`, `outputSchema`). This is the discovery format indexed by [x402scan.com](https://x402scan.com), the x402 Bazaar, and [agentic.market](https://agentic.market).
+```bash
+curl -s {BASE_URL}/.well-known/x402      # the manifest below
+```
 
-## Paying
+```jsonc
+{
+  "x402Version": 1,
+  "name": "x402-grocery",
+  "description": "Real grocery product search and cart building over the Kroger API, priced per operation",
+  "resources": [
+    {
+      "resource": "GET /products",
+      "description": "Search grocery products with prices, promos, aisle locations and stock levels.",
+      "price": "$0.002",
+      "accepts": [
+        { "scheme": "exact", "network": "base-sepolia", "asset": "USDC", "payTo": "0x40252CFDF8B20Ed757D61ff157719F33Ec332402", "maxAmountRequired": "2000" },
+        { "scheme": "exact", "network": "solana",       "asset": "USDC", "payTo": "WwwuGbqHrwF5RG89KhUbmRWEvjnRH9k5kVM5p7T3WwW", "maxAmountRequired": "2000" }
+      ],
+      "outputSchema": { /* … */ }
+    }
+    // …
+  ]
+}
+```
 
-Any x402 client works. With `x402-fetch`:
+And [`skill.md`](https://github.com/nirholas/x402-grocery/blob/main/skill.md) at the repo root — the prose contract written for a model to read directly: what each endpoint does, its price, its exact response shape, and the error codes. Drop it into your agent's context and it can call this service without any other documentation.
+
+## 2. Paying
+
+**Pay in USDC on Base or Solana — your client picks the rail.** Every 402 lists both:
+
+| Rail | Network | Asset | payTo | Facilitator |
+|---|---|---|---|---|
+| EVM | `base-sepolia` / `base` | USDC `0x036CbD53842c5426634e7929541eC2318f3dCF7e` | `0x40252CFDF8B20Ed757D61ff157719F33Ec332402` | `https://x402.org/facilitator` |
+| Solana | `solana` | USDC `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` | `WwwuGbqHrwF5RG89KhUbmRWEvjnRH9k5kVM5p7T3WwW` | `https://facilitator.payai.network` |
+
+### EVM
+
+The wallet signs an EIP-3009 transfer authorization entirely locally — no round-trip, no gas from the agent. With [`x402-fetch`](https://www.npmjs.com/package/x402-fetch) it's two lines:
 
 ```ts
 import { privateKeyToAccount } from "viem/accounts";
-import { wrapFetchWithPayment, decodeXPaymentResponse } from "x402-fetch";
+import { wrapFetchWithPayment } from "x402-fetch";
 
-const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
-const payFetch = wrapFetchWithPayment(fetch, account);
-
-const res = await payFetch("https://your-deployment/products?q=milk");
-const artifact = await res.json();                       // the purchased data
-const receipt = decodeXPaymentResponse(res.headers.get("x-payment-response")!); // settlement proof
+const payFetch = wrapFetchWithPayment(fetch, privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`));
+const res = await payFetch("{BASE_URL}/products");   // 402 → pay → 200, transparently
 ```
 
-The wallet needs USDC on the configured network (`base-sepolia` by default — free faucet at faucet.circle.com). `wrapFetchWithPayment` caps per-request spend (default $0.10) as a safety rail.
+### Solana
 
-## What you get back
+Solana wallets sign serialized transactions, so the server builds one for you:
 
-Every paid call returns the full purchased artifact in the 200 body — never a job id to poll:
+```
+POST {BASE_URL}/api/x402-checkout?action=prepare
+  { "accept": <solana entry from the 402>, "buyer": "<base58 pubkey>" }
+  → { "tx_base64", "recent_blockhash" }
 
-- `GET /products` → product list with prices, promos, aisles, stock.
-- `POST /cart` → complete priced cart: per-line matches, explicit substitutions, subtotal/tax/total.
+POST {BASE_URL}/api/x402-checkout?action=encode
+  { "accept": <same>, "signed_tx_base64": "<signed>", "resource_url": "<resource>" }
+  → { "x_payment" }
+```
 
-Responses always carry `source`: `"kroger"` (live upstream) or `"fixture"` (deterministic demo catalog) so agents can weigh data freshness honestly.
+Retry the original request with `X-PAYMENT: <x_payment>`. The `extra.feePayer` sponsor covers the SOL network fee, so the agent's wallet needs only USDC.
 
-## MCP integration
+## 3. What you get back
 
-To give Claude these capabilities as native tools, run the small MCP server in [examples/mcp-tool.md](https://github.com/nirholas/x402-grocery/blob/main/examples/mcp-tool.md) and register it in `claude_desktop_config.json`. Each tool call transparently pays the endpoint and returns the artifact as tool output.
+A `200` whose body **is** the artifact — every paid route in this service returns what you bought inline. No job ids, no polling, no webhooks. Alongside it:
 
-## Listing this service
+- `X-PAYMENT-RESPONSE` header — base64 JSON settlement receipt
+- `payment` field in the body — the same receipt, for agents that only parse JSON
 
-Operators who deploy x402-grocery publicly can get discovered by agent ecosystems:
+```json
+{ "success": true, "rail": "solana", "network": "solana", "transaction": "5xk…", "payer": "9wF…", "amount": "2000" }
+```
 
-- **x402scan.com** — indexes services exposing `/.well-known/x402`; submit your base URL.
-- **x402 Bazaar** — CDP's discovery layer for x402 services; list via the Bazaar registration flow.
-- **agentic.market** — marketplace for agent-usable paid APIs; the manifest + `skill.md` are the listing collateral.
+Persist it — it's the audit trail linking a spend to the data it bought.
 
-Keep the manifest served at `/.well-known/x402` accurate — indexers re-crawl it.
+## 4. Budgeting
+
+- `GET /products` → **$0.002**
+- `POST /cart` → **$0.005**
+
+A price check is `$0.002`; a full cart build is `$0.005` regardless of how many lines it contains, so batching a shopping list into one `POST /cart` is far cheaper than searching each item separately. 1,000 cart builds cost $5.
+
+## 5. MCP integration
+
+[`examples/mcp-tool.md`](https://github.com/nirholas/x402-grocery/blob/main/examples/mcp-tool.md) has a complete MCP server exposing these 2 endpoints as tools for Claude, with the payment wrapper already wired in.
+
+## 6. Listing this service
+
+Once deployed at a public origin (set `PUBLIC_BASE_URL` so the 402 `resource` is correct):
+
+- **[x402scan.com](https://x402scan.com)** — crawls `/.well-known/x402`; submit your base URL.
+- **x402 Bazaar** — the protocol's own directory, reachable through the facilitator's `list` API; see <https://x402.org>.
+- **[agentic.market](https://agentic.market)** — agent-facing marketplace; the manifest plus `skill.md` is all it needs.
+
+All three read the same manifest this repo already serves, so listing is a URL submission, not an integration.
+
+## 7. Data honesty
+
+Live Kroger data is used when `KROGER_CLIENT_ID` and `KROGER_CLIENT_SECRET` are set (a free developer account at developer.kroger.com). Without them the service answers from a deterministic fixture catalog of ~30 common grocery items and labels every response `"source": "fixture"`. The shape of the response is identical either way, so an agent can develop against fixtures and switch to live data with no code change.
+
+An agent should branch on the `source` field rather than assume live data.

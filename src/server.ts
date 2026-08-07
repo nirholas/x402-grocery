@@ -3,53 +3,36 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
-import { paymentMiddleware, type RoutesConfig } from "x402-express";
+import {
+  activeRails,
+  mountSolanaCheckout,
+  paymentReceipt,
+  paywall,
+  usingSuiteDefaultPayTo,
+  type RoutePrices,
+} from "./payments.js";
 import { activeSource, buildCart, searchProducts, type CartItemRequest } from "./service.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, "..", "public");
 
-const payTo = process.env.PAY_TO_ADDRESS;
-if (!payTo || !payTo.startsWith("0x")) {
-  console.error(
-    "FATAL: PAY_TO_ADDRESS is not set.\n" +
-      "Set PAY_TO_ADDRESS to the EVM address that should receive USDC payments, e.g.\n" +
-      "  PAY_TO_ADDRESS=0xYourAddress npm run dev",
-  );
-  process.exit(1);
-}
-
-const network = process.env.NETWORK === "base" ? "base" : "base-sepolia";
-const facilitatorUrl = (process.env.FACILITATOR_URL ?? "https://x402.org/facilitator") as `${string}://${string}`;
-
-const PRICES: Record<string, string> = {
+const PRICES: RoutePrices = {
   "GET /products": "$0.002",
   "POST /cart": "$0.005",
-};
-
-const routes: RoutesConfig = {
-  "GET /products": {
-    price: PRICES["GET /products"],
-    network,
-    config: { description: "Grocery product search: real products with prices and aisle locations" },
-  },
-  "POST /cart": {
-    price: PRICES["POST /cart"],
-    network,
-    config: { description: "Build a priced grocery cart with line prices, totals, and substitutions" },
-  },
 };
 
 const app = express();
 app.use(express.json({ limit: "256kb" }));
 
-// Payment middleware — free routes are not in the route map.
-app.use(paymentMiddleware(payTo as `0x${string}`, routes, { url: facilitatorUrl }));
-
-// ----- Free routes -----
+// ----- Free routes (declared before the paywall so they stay free) -----
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "x402-grocery", source: activeSource(), network });
+  res.json({
+    ok: true,
+    service: "x402-grocery",
+    source: activeSource(),
+    rails: activeRails().map((r) => ({ rail: r.rail, network: r.network })),
+  });
 });
 
 app.get("/.well-known/x402", (_req, res) => {
@@ -59,7 +42,13 @@ app.get("/.well-known/x402", (_req, res) => {
 
 app.use(express.static(PUBLIC_DIR, { dotfiles: "allow" }));
 
-// ----- Paid routes -----
+// Solana checkout helpers (prepare/encode) for wallets that sign serialized txs.
+await mountSolanaCheckout(app);
+
+// ----- Paywall: dual-rail x402, USDC on Base or Solana -----
+app.use(paywall(PRICES, { service: "x402-grocery" }));
+
+// ----- Paid routes: every one returns the purchased artifact in the 200 body -----
 
 app.get("/products", async (req, res) => {
   try {
@@ -70,7 +59,8 @@ app.get("/products", async (req, res) => {
     }
     const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? 10) || 10));
     const locationId = req.query.locationId ? String(req.query.locationId) : undefined;
-    res.json(await searchProducts(term, locationId, limit));
+    const result = await searchProducts(term, locationId, limit);
+    res.json({ ...result, payment: paymentReceipt(res) });
   } catch (err) {
     res.status(502).json({ error: "upstream_error", message: (err as Error).message });
   }
@@ -90,7 +80,8 @@ app.post("/cart", async (req, res) => {
       res.status(400).json({ error: "too_many_items", message: "Maximum 50 items per cart" });
       return;
     }
-    res.json(await buildCart(body.items, body.locationId));
+    const cart = await buildCart(body.items, body.locationId);
+    res.json({ ...cart, payment: paymentReceipt(res) });
   } catch (err) {
     res.status(502).json({ error: "upstream_error", message: (err as Error).message });
   }
@@ -99,7 +90,16 @@ app.post("/cart", async (req, res) => {
 const port = Number(process.env.PORT ?? 4021);
 app.listen(port, () => {
   console.log(`x402-grocery listening on http://localhost:${port}`);
-  console.log(`  mode: ${activeSource()} | network: ${network} | payTo: ${payTo}`);
+  console.log(`  data source: ${activeSource()}`);
+  console.log("  payment rails:");
+  for (const rail of activeRails()) {
+    console.log(`    ${rail.rail.padEnd(7)} ${rail.network.padEnd(14)} → ${rail.payTo}`);
+  }
+  if (usingSuiteDefaultPayTo()) {
+    console.log(
+      "  note: using suite default payTo — set PAY_TO_ADDRESS/SOLANA_PAY_TO_ADDRESS to receive funds yourself",
+    );
+  }
   console.log("  paid routes:");
   for (const [route, price] of Object.entries(PRICES)) {
     console.log(`    ${route.padEnd(18)} ${price}`);
