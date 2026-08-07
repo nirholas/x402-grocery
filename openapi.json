@@ -1,0 +1,230 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "x402-grocery",
+    "version": "0.1.0",
+    "description": "Real grocery product search and cart building over the Kroger API, priced per operation via the x402 payment protocol (USDC on Base).",
+    "license": { "name": "Apache-2.0", "identifier": "Apache-2.0" }
+  },
+  "servers": [{ "url": "http://localhost:4021" }],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health check (free)",
+        "responses": {
+          "200": {
+            "description": "Service status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "service": { "type": "string" },
+                    "source": { "type": "string", "enum": ["kroger", "fixture"] },
+                    "network": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/x402": {
+      "get": {
+        "summary": "x402 discovery manifest (free)",
+        "responses": {
+          "200": {
+            "description": "Machine-readable list of paid resources",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+          }
+        }
+      }
+    },
+    "/products": {
+      "get": {
+        "summary": "Search grocery products ($0.002 per query)",
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Search term, e.g. milk" },
+          { "name": "locationId", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Kroger store location id (live mode)" },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 10 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Products with prices and aisle locations",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProductSearchResult" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" },
+          "502": { "$ref": "#/components/responses/UpstreamError" }
+        }
+      }
+    },
+    "/cart": {
+      "post": {
+        "summary": "Build a priced cart ($0.005 per build)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["items"],
+                "properties": {
+                  "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "query": { "type": "string" },
+                        "upc": { "type": "string" },
+                        "quantity": { "type": "integer", "minimum": 1, "maximum": 99, "default": 1 }
+                      }
+                    }
+                  },
+                  "locationId": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Built cart with line prices, totals, substitutions",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CartResult" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" },
+          "502": { "$ref": "#/components/responses/UpstreamError" }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "PaymentRequired": {
+        "description": "Payment required (x402). Retry with an X-PAYMENT header produced by an x402 client.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/PaymentRequirements" }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Invalid request",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "UpstreamError": {
+        "description": "Upstream API error",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": { "error": { "type": "string" }, "message": { "type": "string" } }
+      },
+      "PaymentRequirements": {
+        "type": "object",
+        "description": "x402 payment requirements returned with HTTP 402",
+        "properties": {
+          "x402Version": { "type": "integer" },
+          "error": { "type": "string" },
+          "accepts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "scheme": { "type": "string", "example": "exact" },
+                "network": { "type": "string", "example": "base-sepolia" },
+                "maxAmountRequired": { "type": "string" },
+                "resource": { "type": "string" },
+                "description": { "type": "string" },
+                "mimeType": { "type": "string" },
+                "payTo": { "type": "string" },
+                "maxTimeoutSeconds": { "type": "integer" },
+                "asset": { "type": "string", "description": "USDC contract address" },
+                "extra": { "type": "object" }
+              }
+            }
+          }
+        }
+      },
+      "Product": {
+        "type": "object",
+        "properties": {
+          "productId": { "type": "string" },
+          "upc": { "type": "string" },
+          "description": { "type": "string" },
+          "brand": { "type": "string" },
+          "category": { "type": "string" },
+          "size": { "type": "string" },
+          "price": {
+            "type": "object",
+            "properties": {
+              "regular": { "type": "number" },
+              "promo": { "type": ["number", "null"] }
+            }
+          },
+          "aisle": { "type": "string" },
+          "stockLevel": { "type": "string", "enum": ["HIGH", "LOW", "TEMPORARILY_OUT_OF_STOCK"] }
+        }
+      },
+      "ProductSearchResult": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string", "enum": ["kroger", "fixture"] },
+          "query": { "type": "string" },
+          "locationId": { "type": ["string", "null"] },
+          "count": { "type": "integer" },
+          "products": { "type": "array", "items": { "$ref": "#/components/schemas/Product" } }
+        }
+      },
+      "CartResult": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string", "enum": ["kroger", "fixture"] },
+          "cartId": { "type": "string" },
+          "locationId": { "type": ["string", "null"] },
+          "builtAt": { "type": "string", "format": "date-time" },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "requested": {
+                  "type": "object",
+                  "properties": {
+                    "query": { "type": "string" },
+                    "upc": { "type": "string" },
+                    "quantity": { "type": "integer" }
+                  }
+                },
+                "matched": { "oneOf": [{ "$ref": "#/components/schemas/Product" }, { "type": "null" }] },
+                "substituted": { "type": "boolean" },
+                "substitutionNote": { "type": ["string", "null"] },
+                "unitPrice": { "type": "number" },
+                "lineTotal": { "type": "number" }
+              }
+            }
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "itemCount": { "type": "integer" },
+              "matchedLines": { "type": "integer" },
+              "unmatchedLines": { "type": "integer" },
+              "substitutedLines": { "type": "integer" },
+              "subtotal": { "type": "number" },
+              "estimatedTax": { "type": "number" },
+              "estimatedTotal": { "type": "number" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

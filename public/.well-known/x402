@@ -1,0 +1,88 @@
+{
+  "x402Version": 1,
+  "name": "x402-grocery",
+  "description": "Real grocery product search and cart building over the Kroger API, priced per operation",
+  "resources": [
+    {
+      "resource": "GET /products",
+      "description": "Grocery product search. Query params: q (required search term), locationId (optional Kroger store id), limit (1-50, default 10). Returns real products with prices, promo prices, aisle locations, and stock levels.",
+      "price": "$0.002",
+      "network": "base-sepolia",
+      "asset": "USDC",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string", "enum": ["kroger", "fixture"] },
+          "query": { "type": "string" },
+          "locationId": { "type": ["string", "null"] },
+          "count": { "type": "integer" },
+          "products": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "productId": { "type": "string" },
+                "upc": { "type": "string" },
+                "description": { "type": "string" },
+                "brand": { "type": "string" },
+                "category": { "type": "string" },
+                "size": { "type": "string" },
+                "price": {
+                  "type": "object",
+                  "properties": {
+                    "regular": { "type": "number" },
+                    "promo": { "type": ["number", "null"] }
+                  }
+                },
+                "aisle": { "type": "string" },
+                "stockLevel": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "resource": "POST /cart",
+      "description": "Build a priced grocery cart. Body: { items: [{ query?, upc?, quantity? }], locationId? }. Returns matched line items with unit prices, substitution notes, subtotal, estimated tax, and total.",
+      "price": "$0.005",
+      "network": "base-sepolia",
+      "asset": "USDC",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string", "enum": ["kroger", "fixture"] },
+          "cartId": { "type": "string" },
+          "locationId": { "type": ["string", "null"] },
+          "builtAt": { "type": "string", "format": "date-time" },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "requested": { "type": "object" },
+                "matched": { "type": ["object", "null"] },
+                "substituted": { "type": "boolean" },
+                "substitutionNote": { "type": ["string", "null"] },
+                "unitPrice": { "type": "number" },
+                "lineTotal": { "type": "number" }
+              }
+            }
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "itemCount": { "type": "integer" },
+              "matchedLines": { "type": "integer" },
+              "unmatchedLines": { "type": "integer" },
+              "substitutedLines": { "type": "integer" },
+              "subtotal": { "type": "number" },
+              "estimatedTax": { "type": "number" },
+              "estimatedTotal": { "type": "number" }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
