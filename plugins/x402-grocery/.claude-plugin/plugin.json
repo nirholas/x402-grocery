@@ -1,0 +1,18 @@
+{
+  "name": "x402-grocery",
+  "version": "0.1.0",
+  "description": "Self-hosted grocery product search and cart pricing over the Kroger API, priced per call over x402.",
+  "author": {
+    "name": "nirholas"
+  },
+  "repository": "https://github.com/nirholas/x402-grocery",
+  "homepage": "https://nirholas.github.io/x402-grocery/",
+  "license": "Apache-2.0",
+  "keywords": [
+    "x402",
+    "grocery",
+    "kroger",
+    "shopping-cart",
+    "agents"
+  ]
+}
