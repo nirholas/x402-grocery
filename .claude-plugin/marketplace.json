@@ -1,0 +1,22 @@
+{
+  "name": "x402-grocery",
+  "owner": {
+    "name": "nirholas"
+  },
+  "description": "Self-hosted grocery product search and cart pricing over the Kroger API, priced per call over x402.",
+  "plugins": [
+    {
+      "name": "x402-grocery",
+      "source": "./plugins/x402-grocery",
+      "description": "Self-hosted grocery product search and cart pricing over the Kroger API, priced per call over x402.",
+      "category": "automation",
+      "tags": [
+        "x402",
+        "grocery",
+        "kroger",
+        "shopping-cart",
+        "agents"
+      ]
+    }
+  ]
+}
